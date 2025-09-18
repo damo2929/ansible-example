@@ -1,0 +1,179 @@
+---
+- name: Create contact groups and VLANs from Workday projects
+  hosts: localhost
+  vars:
+    project_vlan_id_start: 2000
+    project_prefix_container: "10.199.0.0/16"
+    project_prefix_size: 27
+    tenant: "Science Computing"
+    site_slug: "Wallingford"
+    cvn_role: "Cloud Virtual Network"
+    cluster: Scicom_Wallingford
+  tasks:
+    - name: Log netbox instance we're targetting.
+      debug:
+        msg: "Netbox endpoint: {{ netbox_endpoint }}"
+
+    - name: Fetch projects from workday
+      register: workday_response
+      ansible.builtin.uri:
+        url: "{{ workday_projects_report }}"
+        user: "{{ workday_user }}"
+        password: "{{ workday_pass }}"
+        force_basic_auth: true
+        body_format: json
+
+    - name: Extract projects from response
+      set_fact:
+        all_projects: "{{ workday_response.json.Report_Entry }}"
+
+    # Filter the projects list by basically templating out JSON, since the `| select` filter isn't
+    # capable enough for what we want to do.
+    - name: Filter out inactive projects
+      vars:
+        projects_json: |-
+          [
+          {% for proj in all_projects if
+            proj.CC_Hircy == 'Science' and
+            proj.Proj_Status[0] == '6' and
+            ((proj.projectEndDate + ' 00:00:00') | to_datetime) > now() and
+            ((proj.projectStartDate + ' 00:00:00') | to_datetime) <= now() %}
+          {{proj | to_json }},
+          {% endfor %}
+          ]
+      set_fact:
+        # Use from_yaml to ignore the trailing `,`
+        projects: "{{ projects_json | from_yaml }}"
+
+    - name: Ensure parent contact group exists
+      register: parent_cg
+      netbox.netbox.netbox_contact_group:
+        netbox_url: "{{ netbox_endpoint }}"
+        netbox_token: "{{ netbox_token }}"
+        validate_certs: "{{ netbox_valid_cert }}"
+        state: present
+        data:
+          name: "Imported from Workday"
+          slug: "workday_import"
+          description: "Contact groups imported from Workday projects by Ansible."
+
+    - name: Get already existing contact groups
+      set_fact:
+        # Get all of the children of the parent group, and turn the slug into a project ID
+        existing_cgs: |-
+          {{ query('netbox.netbox.nb_lookup', 'contact-groups',
+                   api_endpoint=netbox_endpoint,
+                   token=netbox_token,
+                   validate_certs=netbox_valid_cert,
+                   api_filter='parent_contact_group=' + parent_cg.contact_group.id | string)
+             | map(attribute='value') | map(attribute='slug') | map('replace', 'project_', '') }}
+
+    - name: Make new contact groups
+      # Avoid creating already existing ones, so we don't set the status back to planned
+      # and to speed things up
+      register: new_cgs
+      loop: |-
+        {{ projects | rejectattr('Proj_Ref_ID', 'in', existing_cgs) }}
+      loop_control:
+        label: "{{ item.project }}"
+      netbox.netbox.netbox_contact_group:
+        netbox_url: "{{ netbox_endpoint }}"
+        netbox_token: "{{ netbox_token }}"
+        validate_certs: "{{ netbox_valid_cert }}"
+        state: present
+        data:
+          name: "Project {{ item.Proj_Ref_ID }}"
+          slug: "project_{{ item.Proj_Ref_ID }}"
+          description: "{{ item.project }}"
+          parent_contact_group: "{{ parent_cg.contact_group.name }}"
+          custom_fields:
+            status: "Planned"
+            permissions: "ScienceEndUser"
+            # TODO: Add custom fields to track start/end date?
+            pm_pool: "PRJ_{{ item.Proj_Ref_ID }}"
+            ad_group: "scicom-proxmox-prj-{{ item.Proj_Ref_ID }}"
+
+    - name: Get the IDs of some container objects
+      set_fact:
+        cvn_role_id: |-
+          {{ query('netbox.netbox.nb_lookup', 'roles',
+                   api_endpoint=netbox_endpoint,
+                   token=netbox_token,
+                   validate_certs=netbox_valid_cert,
+                   api_filter='name="' + cvn_role + '"')[0].value.id }}
+        tenant_slug: |-
+          {{ query('netbox.netbox.nb_lookup', 'tenants',
+                   api_endpoint=netbox_endpoint,
+                   token=netbox_token,
+                   validate_certs=netbox_valid_cert,
+                   api_filter='name="' + tenant + '"')[0].value.slug }}
+
+    - name: Find existing project VLANs
+      set_fact:
+        existing_vlans_raw: |-
+          {{ query('netbox.netbox.nb_lookup', 'vlans',
+                   api_endpoint=netbox_endpoint,
+                   token=netbox_token,
+                   validate_certs=netbox_valid_cert,
+                   api_filter='role_id="' + cvn_role_id + '" vid__gte=' + (project_vlan_id_start | string)) }}
+
+    - name: Get projects with an already existing VLAN
+      set_fact:
+        existing_vlans: |-
+          {{ existing_vlans_raw | map(attribute='value') | map(attribute='custom_fields') | map(attribute='proxmoxsdn') | map('replace', 'PRJ', '') }}
+        next_vid: |-
+          {{ ((existing_vlans_raw | map(attribute='value') | map(attribute='vid') + [project_vlan_id_start]) | max) + 1 }}
+
+    - name: Make new VLANs
+      # Avoid creating already existing ones, so we don't set the status back to planned
+      # and to speed things up
+      register: new_vlans
+      loop: |-
+        {{ projects | rejectattr('Proj_Ref_ID', 'in', existing_vlans) }}
+      loop_control:
+        label: "{{ item.project }}"
+        index_var: new_idx
+      netbox.netbox.netbox_vlan:
+        netbox_url: "{{ netbox_endpoint }}"
+        netbox_token: "{{ netbox_token }}"
+        validate_certs: "{{ netbox_valid_cert }}"
+        state: present
+        data:
+          name: "Project {{ item.Proj_Ref_ID }}"
+          description: "{{ item.project }}"
+          vlan_role: "{{ cvn_role }}"
+          vid: "{{ (next_vid | int) + new_idx }}"
+          site: "Wallingford"
+          status: "planned"
+          tenant: "{{ tenant_slug }}"
+          custom_fields:
+            customer_group:
+              slug: "project_{{ item.Proj_Ref_ID }}"
+            proxmoxsdn: "PRJ{{ item.Proj_Ref_ID }}"
+
+    - name: Allocate IP prefixes for new VLANs
+      # item.0 is the project, item.1 is the vlan creation result
+      loop: "{{ projects | rejectattr('Proj_Ref_ID', 'in', existing_vlans) | zip(new_vlans.results) }}"
+      netbox.netbox.netbox_prefix:
+        netbox_url: "{{ netbox_endpoint }}"
+        netbox_token: "{{ netbox_token }}"
+        validate_certs: "{{ netbox_valid_cert }}"
+        state: present
+        first_available: true
+        data:
+          parent: "{{ project_prefix_container }}"
+          description: "{{ item.0.project }}"
+          prefix_role: "{{ cvn_role }}"
+          prefix_length: "{{ project_prefix_size }}"
+          status: "reserved"
+          tenant: "{{ tenant_slug }}"
+          site: "{{ site_slug }}"
+          vlan:
+            id: "{{ item.1.vlan.id }}"
+          custom_fields:
+            customer_group:
+              slug: "project_{{ item.0.Proj_Ref_ID }}"
+
+    # TODO: Mark existing ones that aren't active anymore as decommisioned
+    # TODO: Add the owner as a contact
+    # TODO: Create AD group and add people

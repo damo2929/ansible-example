@@ -1,0 +1,341 @@
+---
+- name: Create Proxmox virtual machines
+  hosts: "{{ target_hosts | default('cluster_Scicom_Wallingford:&status_planned') }}"
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Set correct OS type
+      ansible.builtin.set_fact:
+        os_type: "{{ 'win10' if 'win' in platforms[0] else 'l26' }}"
+
+    # look up the vlan information from netbox - this should have prefix information also. 
+    
+    - name: Get contact information
+      ansible.builtin.set_fact:
+       contacts_netbox_info: "{{ query('netbox.netbox.nb_lookup', 'contacts',
+          api_endpoint=netbox_endpoint,
+          token=netbox_token,
+          validate_certs=netbox_valid_cert,
+          api_filter='id=' + (custom_fields.owner.id | string())) }}"
+          
+    - name: Get more info from netbox
+      ansible.builtin.set_fact:
+        vlan_netbox_info: "{{ query('netbox.netbox.nb_lookup', 'vlans',
+          api_endpoint=netbox_endpoint,
+          token=netbox_token,
+          validate_certs=netbox_valid_cert,
+          api_filter='id=' + (custom_fields.defaultvlan.id | string())) }}"
+        # TODO: Add this back later when pools added.
+        # cg_netbox_info: "{{ query('netbox.netbox.nb_lookup', 'contact-groups',
+        #   api_endpoint=netbox_endpoint,
+        #   token=netbox_token,
+        #   validate_certs=netbox_valid_cert,
+        #   api_filter='id=' + (custom_fields.contact_group.id | string())) }}"
+
+    - name: fail if user doesnt exist in proxmox
+      delegate_to: localhost
+      community.proxmox.proxmox_user_info:
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        api_host: "{{ proxmox_api_ip }}"
+        userid: "{{ contacts_netbox_info[0].custom_fields.username}}@ad"
+
+
+    - name: Fail if no ISO file exists for the OS
+      ansible.builtin.stat:
+        path: "{{ iso | replace('isos:', '/mnt/pve/isos/template/') }}"
+      register: iso_file
+      delegate_to: "{{ proxmox_api_host }}"
+      failed_when: not iso_file.stat.exists
+      when:
+        - is_virtual
+        - status.value == 'planned'
+
+    - name: Check if VM is present or manually built
+      delegate_to: localhost
+      community.proxmox.proxmox_vm_info:
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        api_host: "{{ proxmox_api_ip }}"
+        name: "{{ inventory_hostname }}"
+        config: current
+      register: existing_vm
+      ignore_errors: true
+      failed_when: (existing_vm.proxmox_vms | length) == 0
+      when:
+        - is_virtual
+        - status.value == 'planned'
+
+    - name: Configure Proxmox VM
+      when:
+        - is_virtual
+        - status.value == 'planned'
+        - existing_vm is failed
+      block:
+        - name: Check VLAN corresponds to a proxmox VNet
+          when: vlan_netbox_info[0].custom_fields.proxmoxsdn is undefined
+          ansible.builtin.fail:
+            msg: Netbox VLAN doesn't have Proxmox SDN field set, so not sure what VNet to use
+
+        # TODO: Add this back later when pool data is accessible.
+        # - name: Check contact group corresponds to a proxmox resource pool
+        #   when: cg_netbox_info[0].custom_fields.pm_pool is undefined
+        #   ansible.builtin.fail:
+        #     msg: Netbox contact group doesn't have Proxmox SDN field set, so not sure what resource pool to add to
+
+        - name: Create Proxmox VM
+          register: created_vm
+          delegate_to: localhost
+          community.proxmox.proxmox_kvm:
+            api_user: "{{ proxmox_user }}"
+            api_password: "{{ proxmox_password }}"
+            api_host: "{{ proxmox_api_ip }}"
+            name: "{{ inventory_hostname }}"
+            net: '{"net0":"virtio,bridge={{ vlan_netbox_info[0].custom_fields.proxmoxsdn }}"}'
+            scsi:
+              scsi0: "{{ custom_fields.pool }}:{{ disk / 1000 }},format=qcow2,cache=writeback,discard=on,ssd=1"
+            sata:
+              sata0: "{{ iso }},media=cdrom"
+            cores: "{{ vcpus | int }}"
+            memory: "{{ memory }}"
+            cpu: "{{ custom_fields.processor_type }}"
+            boot: "cdn"
+            machine: "q35"
+            ostype: "{{ os_type }}"
+            scsihw: "virtio-scsi-single"
+            shares: 0
+            bootdisk: "scsi0"
+            numa_enabled: true
+            acpi: true
+            agent: "enabled=1,fstrim_cloned_disks=1"
+            bios: ovmf
+            vga: qxl
+            balloon: "{{ memory }}"
+            hotplug: "network,disk,usb"
+            smbios: "base64=1,serial={{ inventory_hostname | b64encode }}"
+            node: "{{ proxmox_api_host }}"
+            tags:
+              - production
+              - "{{ custom_fields.owner.name | replace(' ', '') | lower() }}"
+            efidisk0:
+              storage: "{{ custom_fields.pool }}"
+              format: raw
+              efitype: 4m
+              pre_enrolled_keys: "{{ custom_fields.secureboot }}"
+
+        - name: Let registration complete on cluster
+          ansible.builtin.pause:
+            seconds: 5
+          when:
+            - created_vm.changed
+
+        # TODO: Add this feature back in when we've got the necesarry data.
+        # - name: Add VM to resource pool
+        #   delegate_to: localhost
+        #   community.proxmox.proxmox_pool_member:
+        #     api_user: "{{ proxmox_user }}"
+        #     api_password: "{{ proxmox_password }}"
+        #     api_host: "{{ proxmox_api_ip }}"
+        #     poolid: "{{ cg_netbox_info[0].custom_fields.pm_pool }}"
+        #     member: "{{ created_vm.vmid }}"
+        #     type: vm
+        #     state: present
+
+        - name: create proxmox ACL so user can connect to console
+          community.proxmox.proxmox_access_acl:
+            api_user: "{{ proxmox_user }}"
+            api_password: "{{ proxmox_password }}"
+            api_host: "{{ proxmox_api_ip }}"
+            state: "present"
+            path: "/vms/{{ created_vm.vmid  }}"
+            type: user
+            ugid: "{{ contacts_netbox_info[0].custom_fields.username}}@ad"
+            roleid: ScienceEndUser
+            propagate: 1
+          delegate_to: localhost
+
+        - name: Add hookscript to the VM
+          delegate_to: "{{ proxmox_api_host }}"
+          become: true
+          ansible.builtin.command:
+            cmd: /usr/sbin/qm set {{ created_vm.vmid  }} --hookscript "{{ hostvars[inventory_hostname].config_context[0].hookscript.path }}"
+
+#needs an community.general release after 25 March 2025
+
+        - name: Add Spice compatible usb device
+          community.proxmox.proxmox_kvm:
+            api_user: "{{ proxmox_user }}"
+            api_password: "{{ proxmox_password }}"
+            api_host: "{{ proxmox_api_ip }}"
+            node: "{{ proxmox_api_host }}"
+            vmid: "{{ created_vm.vmid  }}"
+            usb: '{"usb0":"spice,usb3=1"}'
+            update: true 
+          when:
+            - custom_fields.spice_usb is defined and custom_fields.spice_usb
+
+#needs an community.general release after 25 March 2025
+        - name: Add Spice compatible audio device
+          community.proxmox.proxmox_kvm:
+               api_user: "{{ proxmox_user }}"
+               api_password: "{{ proxmox_password }}"
+               api_host: "{{ proxmox_api_ip }}"
+               node: "{{ proxmox_api_host }}"
+               vmid: "{{ created_vm.vmid }}"
+               audio: '{"audio0":"device=ich9-intel-hda,driver=spice"}'
+               update: true
+          delegate_to: localhost
+          when:
+            - custom_fields.spice_audio is defined and custom_fields.spice_audio
+
+            
+
+        - name: Set RNG source, VM Agent, and better SPICE quality on proxmox VM
+          delegate_to: "{{ proxmox_api_host }}"
+          become: true
+          ansible.builtin.command:
+            cmd: "\
+              /usr/sbin/qm set {{ created_vm.vmid }} \
+              --rng0 source=/dev/urandom \
+              --spice_enhancements videostreaming=all"
+
+    - name: Get MAC address of VM
+      when:
+        - is_virtual
+        - status.value == 'planned'
+      ansible.builtin.set_fact:
+        # The vm_config module returns the full interface config string, ie `virtio=AE:AE:5C:A8:89:85,bridge=SLUSA`
+        # so we do annoying string hacking
+        primary_mac_addr:
+          "{{ created_vm.mac.net0 if created_vm is defined and created_vm.changed
+          else ((existing_vm.proxmox_vms[0].config.net0 | split(','))[0] | split('='))[1] }}"
+
+    - name: Assign IP
+      when: primary_mac_addr is defined and primary_ip4 is undefined
+      block:
+        # Each VLAN should have an associated prefix, which is where we allocate the IP
+        # Fetch this first, so that if the VLAN doesn't have one then we fail fast
+        - name: Find the prefix to get the IP from
+          ansible.builtin.set_fact:
+            prefix_netbox_info: "{{ query('netbox.netbox.nb_lookup', 'prefixes',
+              api_endpoint=netbox_endpoint,
+              token=netbox_token,
+              validate_certs=netbox_valid_cert,
+              api_filter='status=active family=4 site=wallingford vlan_id=' + (custom_fields.defaultvlan.id | string())) }}"
+
+        - name: Add interface in netbox
+          delegate_to: localhost
+          netbox.netbox.netbox_vm_interface:
+            netbox_url: "{{ netbox_endpoint }}"
+            netbox_token: "{{ netbox_token }}"
+            validate_certs: "{{ netbox_valid_cert }}"
+            data:
+              virtual_machine: "{{ inventory_hostname }}"
+              name: "enx{{ primary_mac_addr | replace(':', '') | lower }}"
+              mac_address: "{{ primary_mac_addr }}"
+              mode: "access"
+              untagged_vlan:
+                name: "{{ custom_fields.defaultvlan.name }}"
+                site: "{{ sites[0].slug }}"
+            state: present
+
+        - name: Allocate an IP in the prefix
+          register: ipallocation
+          delegate_to: localhost
+          netbox.netbox.netbox_ip_address:
+            netbox_url: "{{ netbox_endpoint }}"
+            netbox_token: "{{ netbox_token }}"
+            validate_certs: "{{ netbox_valid_cert }}"
+            data:
+              dns_name: "{{ inventory_hostname }}.{{ powerdns_zone }}"
+              prefix: "{{ prefix_netbox_info[0].value.prefix }}"
+              assigned_object:
+                virtual_machine: "{{ inventory_hostname }}"
+                name: "enx{{ primary_mac_addr | replace(':', '') | lower }}"
+              tenant: "{{ tenants[0] }}"
+            state: new
+
+        - name: Set as the primary IPv4 address in netbox
+          delegate_to: localhost
+          netbox.netbox.netbox_virtual_machine:
+            netbox_url: "{{ netbox_endpoint }}"
+            netbox_token: "{{ netbox_token }}"
+            validate_certs: "{{ netbox_valid_cert }}"
+            data:
+              name: "{{ inventory_hostname }}"
+              primary_ip4: "{{ ipallocation.ip_address.address }}"
+            state: present
+
+        - name: Set as the primary IPv4 address for rest of playbook
+          ansible.builtin.set_fact:
+            primary_ip4: "{{ ipallocation.ip_address.address }}"
+
+    - name: Ensure DNS record exists for server
+      when: primary_ip4 is defined
+      delegate_to: localhost
+      powerdns_record:
+        name: "{{ inventory_hostname }}.{{ powerdns_zone }}"
+        zone: "{{ powerdns_zone }}"
+        type: A
+        content: "{{ primary_ip4 | ansible.utils.ipaddr('address') }}"
+        ttl: 600
+        pdns_host: "{{ powerdns_server }}"
+        pdns_port: "{{ powerdns_port }}"
+        pdns_api_key: "{{ powerdns_apikey }}"
+        pdns_prot: https
+        strict_ssl_checking: "{{ powerdns_valid_cert }}"
+        state: present
+
+    - name: Set status as staged in Netbox
+      when: status != 'staged'
+      notify:
+        - Refresh inventory
+      delegate_to: localhost
+      netbox.netbox.netbox_virtual_machine:
+        netbox_url: "{{ netbox_endpoint }}"
+        netbox_token: "{{ netbox_token }}"
+        validate_certs: "{{ netbox_valid_cert }}"
+        data:
+          name: "{{ inventory_hostname }}"
+          status: staged
+        state: present
+
+  # Pick up changes to state
+  handlers:
+    - name: Refresh inventory
+      ansible.builtin.meta: refresh_inventory
+
+- name: Create DHCP allocations
+  import_playbook: dhcp-config.yml
+
+- name: Start Proxmox VMs
+  hosts: "{{ target_hosts | default('cluster_Scicom_Wallingford:&status_staged') }}"
+  gather_facts: false
+  serial: 5
+  
+  vars:
+    ansible_host_key_checking: false
+
+  tasks:
+    - name: Start VM
+      delegate_to: localhost
+      community.proxmox.proxmox_kvm:
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        api_host: "{{ proxmox_api_ip }}"
+        name: "{{ inventory_hostname }}"
+        state: started
+      when:
+        - is_virtual
+  
+    - name: Wait for the machine to come online
+      ansible.builtin.pause:
+        minutes: 5
+
+    - name: Accept SSH key for the host.
+      delegate_to: localhost
+      ansible.builtin.shell:
+        cmd: /usr/bin/ssh-keyscan {{ ansible_host }} >> {{ lookup('env', 'HOME') }}/.ssh/known_hosts
+      when:
+        - is_virtual
+        - os_type == 'l26'

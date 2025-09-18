@@ -1,0 +1,127 @@
+---
+- name: create proxmox virtual machines
+  hosts: cluster_Scicom_Wallingford:&status_decommissioning:&is_virtual
+  gather_facts: no
+  serial: 1
+
+  vars:
+  
+   #   - proxmox_api_host: "{{ groups['tags_wl_scicom_host'] | random }}" using this works intermittentyl as such I think we hit an ansible bug but not able to resolve.
+   proxmox_api_host: "wlsc-pxmh01"
+   proxmox_api_ip: "{{ hostvars[proxmox_api_host].ansible_host }}"
+
+
+  tasks:
+
+   - name: removing {{ inventory_name }}
+     block:
+
+
+
+      # need to create an IP filter to collect the vlan infomation from the inventory in a format ready to pass to the lookup filter.
+     - name: netbox lookup for ip addresses
+       set_fact:
+         ip_api_filter: "virtual_machine={{ inventory_hostname }}"
+      # put this in a block for conditions so we don't try working on none proxmox stuff.
+
+     - name: force stop the VM if its running.
+       local_action: 
+         module: community.proxmox.proxmox_kvm
+         api_user: "{{ proxmox_user }}"
+         api_password: "{{ proxmox_password }}"
+         api_host: "{{ proxmox_api_ip }}"
+         name: "{{ inventory_hostname }}"
+         state: stopped
+         force: true
+         timeout: 10
+      
+
+     - name: Allow cluster to stop the VM before trying to remove it from the cluster
+       pause:
+         seconds: 10
+
+     - name: Remove the VM from the cluster
+       local_action: 
+         module: community.proxmox.proxmox_kvm
+         api_user: "{{ proxmox_user }}"
+         api_password: "{{ proxmox_password }}"
+         api_host: "{{ proxmox_api_ip }}"
+         name: "{{ inventory_hostname }}"
+         state: absent
+         force: true
+         timeout: 10
+     
+
+     - name: remove dns record for the vm
+       local_action:
+         module: powerdns_record
+         name: "{{ inventory_hostname }}.{{ powerdns_zone }}" 
+         zone: "{{ powerdns_zone }}" 
+         type: A
+         ttl: 600
+         pdns_host: "{{ powerdns_server }}"
+         pdns_port: "{{ powerdns_port }}"
+         pdns_api_key: "{{ powerdns_apikey }}" 
+         pdns_prot: https
+         strict_ssl_checking: "{{ powerdns_valid_cert }}"
+         state: absent
+     
+     - name: remove allocated IP address
+       local_action: 
+         module: netbox.netbox.netbox_ip_address
+         netbox_url: "{{ netbox_endpoint }}"
+         netbox_token: "{{ netbox_token }}"
+         validate_certs: "{{ netbox_valid_cert }}"
+         data:
+          address: "{{ item.value.address }}"
+         state: absent
+       loop: "{{ query('netbox.netbox.nb_lookup', 'ip-addresses',
+                api_endpoint=netbox_endpoint,
+                token=netbox_token,
+                validate_certs=netbox_valid_cert, api_filter=ip_api_filter)
+            }}"
+      
+
+
+     - name: remove  netbox interfaces
+       local_action: 
+        module: netbox.netbox.netbox_vm_interface
+        netbox_url: "{{ netbox_endpoint }}"
+        netbox_token: "{{ netbox_token }}"
+        validate_certs: "{{ netbox_valid_cert }}"
+        data:
+           name: "{{ item.value.name }}"
+           virtual_machine: "{{ inventory_hostname }}"
+        state: absent
+       loop: "{{ query('netbox.netbox.nb_lookup', 'virtualization-interfaces',
+                api_endpoint=netbox_endpoint,
+                token=netbox_token,
+                validate_certs=netbox_valid_cert, api_filter=ip_api_filter)
+            }}" 
+      
+     - name: remove machine from netbox.
+       local_action:
+         module: netbox.netbox.netbox_virtual_machine
+         netbox_url: "{{ netbox_endpoint }}"
+         netbox_token: "{{ netbox_token }}"
+         validate_certs: "{{ netbox_valid_cert }}"
+         data:
+           name: "{{ inventory_hostname }}"
+         state: absent
+      
+
+     - name: remove IP from known_hosts
+       local_action:
+         module: lineinfile
+         regex: "^{{ ansible_ssh_host | regex_escape()  }}"
+         state: absent
+         path: /home/ansible/.ssh/known_hosts
+
+     - name: remove hostname from known_hosts
+       local_action:
+         module: lineinfile
+         regex: "^{{ inventory_hostname }}"
+         state: absent
+         path: /home/ansible/.ssh/known_hosts
+     
+     ignore_errors: true

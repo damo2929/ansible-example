@@ -1,0 +1,118 @@
+# {{ ansible_managed }}
+# dhcpd configuration file for cental dhcp on the private cloud
+
+option domain-name "scicom.ceh.ac.uk";
+option domain-name-servers 10.199.98.211, 10.199.98.212;
+option domain-search "scicom.ceh.ac.uk", "ad.ceh.ac.uk", "nerc-wallingford.ac.uk", "nerc-lancaster.ac.uk", "nerc-bush.ac.uk", "nerc-bangor.ac.uk";
+
+
+# lease time is 24 houurs
+default-lease-time 86400;
+
+# increase max lease to 1 week so that if we have DHCP issues they can be found and resolved before cloud systems disconnect
+max-lease-time 604800;
+
+set vendor-id = option vendor-class-identifier;
+
+# specifying the option space name:
+option space MSFT;
+option MSFT.nbt                 code 1 = unsigned integer 32;
+vendor-option-space MSFT;
+option MSFT.nbt 2;
+
+# Use this to enble / disable dynamic dns updates globally.
+ddns-update-style none;
+
+# If this DHCP server is the official DHCP server for the local
+# network, the authoritative directive should be uncommented.
+authoritative;
+
+# Use this to send dhcp log messages to a different log file (you also
+# have to hack syslog.conf to complete the redirection).
+log-facility local7;
+
+allow bootp;
+option space pxelinux;
+option pxelinux.magic code 208 = string;
+option pxelinux.configfile code 209 = text;
+option pxelinux.pathprefix code 210 = text;
+option pxelinux.reboottime code 211 = unsigned integer 32;
+option architecture-type code 93 = unsigned integer 16;
+
+
+
+
+{% for ipprefix in prefixes.json.results %}
+{% if  ipprefix.vlan.display is defined %}
+    # vlan {{ ipprefix.vlan.display }}
+{% endif %}
+
+subnet {{ ipprefix.prefix | ansible.utils.ipaddr('network') }} netmask {{ ipprefix.prefix | ansible.utils.ipaddr('netmask') }} {
+{% if ipprefix.custom_fields.gateway.address is defined %}
+  option routers {{ ipprefix.custom_fields.gateway.address | ansible.utils.ipaddr('address')  }};
+ {% else %}
+  option routers {{ ipprefix.prefix | ansible.utils.ipaddr('net') | ansible.utils.ipaddr('1')| ansible.utils.ipaddr('address') }};
+ {% endif %}
+{% if ipprefix.custom_fields.pxe_enable and ipprefix.custom_fields.pxe_server is defined and ipprefix.custom_fields.pxe_file is defined %}
+  class "pxeclients" {
+          match if substring (option vendor-class-identifier, 0, 9) = "PXEClient";
+          next-server {{ ipprefix.custom_fields.pxe_server.address | ansible.utils.ipaddr('address') }};
+          filename "{{ ipprefix.custom_fields.pxe_file }}";
+  }        
+{% endif %}
+}
+
+{% endfor %}
+
+
+
+# lets loop over the inventory to build the leases
+{% for host in groups['cluster_Scicom_Wallingford'] %}
+{% if hostvars[host].interfaces[0].ip_addresses[0].address is defined and hostvars[host].interfaces[0].mac_address != None  and hostvars[host].is_virtual %}
+host {{ host }} { 
+  hardware ethernet {{ hostvars[host].interfaces[0].mac_address }};
+  fixed-address {{ hostvars[host].interfaces[0].ip_addresses[0].address | ansible.utils.ipaddr('address')}};
+}
+
+{% endif %}
+{% endfor %}
+
+# lets loop over the inventory to build the leases
+{% for host in groups['device_roles_science_zeiss_microscope'] %}
+{% if hostvars[host].interfaces[0].ip_addresses[0].address is defined and hostvars[host].interfaces[0].mac_address != None  %}
+host {{ host }} {
+  hardware ethernet {{ hostvars[host].interfaces[0].mac_address }};
+  fixed-address {{ hostvars[host].interfaces[0].ip_addresses[0].address | ansible.utils.ipaddr('address')}};
+}
+
+{% endif %}
+{% endfor %}
+
+# Loop for polar entries and assign to 'host' variable
+{% for host in groups['tags_polar_mk3'] %}
+host {{ host }} {
+{% for interfaces in hostvars[host].interfaces %}
+{% for ip in interfaces.ip_addresses %}
+{% if ip.address.split('/')[0] == hostvars[host].ansible_host %}
+  hardware ethernet {{ interfaces.mac_address }};
+  fixed-address {{ ip.address | ansible.utils.ipaddr('address')}};
+{% endif %}
+{% endfor %}
+{% endfor %}
+}
+{% endfor %}
+
+# Loop for polar entries and assign to 'host' variable
+{% for host in groups['device_roles_science_storage_server'] %}
+host {{ host }} {
+{% for interfaces in hostvars[host].interfaces %}
+{% for ip in interfaces.ip_addresses %}
+{% if ip.address.split('/')[0] == hostvars[host].ansible_host %}
+  hardware ethernet {{ interfaces.mac_address }};
+  fixed-address {{ ip.address | ansible.utils.ipaddr('address')}};
+{% endif %}
+{% endfor %}
+{% endfor %}
+}
+{% endfor %}
+

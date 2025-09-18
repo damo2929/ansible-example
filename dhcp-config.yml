@@ -1,0 +1,32 @@
+---
+- name: Configure DHCP server
+  hosts: wlsc-dhcp01
+  become: true
+  tasks:
+    - name: Get private cloud prefixes that are in scope for DHCP from the netbox API
+      delegate_to: localhost
+      register: prefixes
+      become: false
+      uri:
+        url: "\
+          {{ netbox_endpoint }}api/ipam/prefixes/\
+          ?tenant=science_computing&family=4&children=0&site=wallingford&role=cloud-virtual-network&role=cluster_operations&status=active&limit=0"
+        method: GET
+        return_content: true
+        validate_certs: "{{ netbox_valid_cert }}"
+        headers:
+          accept: "application/json"
+          Authorization: "Token {{ netbox_token }}"
+
+    - name: Update DHCPD configuration file
+      template:
+        src: "dhcpd.conf.j2"
+        dest: "/etc/dhcp/dhcpd.conf"
+      notify:
+        - Restart DHCPD
+
+  handlers:
+    - name: Restart DHCPD
+      ansible.builtin.service:
+        name: dhcpd
+        state: restarted
