@@ -1,9 +1,9 @@
 # {{ ansible_managed }}
 # dhcpd configuration file for cental dhcp on the private cloud
 
-option domain-name "scicom.ceh.ac.uk";
+option domain-name "lab.damiendye.uk";
 option domain-name-servers 10.199.98.211, 10.199.98.212;
-option domain-search "scicom.ceh.ac.uk", "ad.ceh.ac.uk", "nerc-wallingford.ac.uk", "nerc-lancaster.ac.uk", "nerc-bush.ac.uk", "nerc-bangor.ac.uk";
+option domain-search "damiendye.uk";
 
 
 # lease time is 24 houurs
@@ -115,4 +115,5 @@ host {{ host }} {
 {% endfor %}
 }
 {% endfor %}
+
 
