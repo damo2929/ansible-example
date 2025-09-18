@@ -1,0 +1,291 @@
+---
+- hosts: "{{ target_hosts | default('cluster_Scicom_Wallingford:&status_staged') }}"
+  ignore_unreachable: true
+  ignore_errors: true
+  become: yes
+  serial: 5
+
+  vars:
+    ansible_command_timeout: 250
+    ansible_ssh_timeout: 300
+
+    
+    active_directory_domain: "{{ config_context[0].ad.ADDomain }}"
+    active_directory_ou: "{{ config_context[0].ad.ADOU }}"
+    active_directory_group: "{{ config_context[0].ad.ADGroup }}"
+    ad_access_filter: "{{ config_context[0].ad.access_filter | default('') }}"
+    forcehomeoverride: "{{ config_context[0].ad.force_home_override | default(true) }}"
+
+    ansible_selinux:
+      status: "{{ ansible_facts.selinux.status }}"
+    ansible_os_family: "{{ ansible_facts.os_family }}"
+    ansible_distribution: "{{ ansible_facts.distribution }}"
+    ansible_distribution_major_version: "{{ ansible_facts.distribution_major_version }}"
+    ansible_all_ipv4_addresses: "{{ ansible_facts.all_ipv4_addresses }}"
+
+    epel_repo_gpg_key: "{{ config_context[0].yumrepos['epel'].gpg }}"
+    epel_repo_name: "{{ config_context[0].yumrepos['epel'].name }}"
+    epel_repo_base_url: "{{ config_context[0].yumrepos['epel'].url }}"
+    epel_repo_file: "{{ config_context[0].yumrepos['epel'].file }}"
+
+    epel_repo_testing_name: "{{ config_context[0].yumrepos['epel-testing'].name }}"
+    epel_repo_testing_file: "{{ config_context[0].yumrepos['epel-testing'].file }}"
+    epel_repo_testing_base_url: "{{ config_context[0].yumrepos['epel-testing'].url }}"
+    epel_repo_testing_enabled: "{{ config_context[0].yumrepos['epel-testing'].enabled }}"
+
+    qgis_repo_gpg_key: "{{ config_context[0].yumrepos['qgis'].gpg }}"
+    qgis_repo_name: "{{ config_context[0].yumrepos['qgis'].name }}"
+    qgis_repo_base_url: "{{ config_context[0].yumrepos['qgis'].url }}"
+    qgis_repo_file: "{{ config_context[0].yumrepos['qgis'].file }}"
+
+    openfoam_repo_gpg_key: "{{ config_context[0].yumrepos['openfoam'].gpg }}"
+    openfoam_repo_name: "{{ config_context[0].yumrepos['openfoam'].name }}"
+    openfoam_repo_base_url: "{{ config_context[0].yumrepos['openfoam'].url }}"
+    openfoam_repo_file: "{{ config_context[0].yumrepos['openfoam'].file }}"
+
+    vscode_repo_gpg_key: "{{ config_context[0].yumrepos['vscode'].gpg }}"
+    vscode_repo_name: "{{ config_context[0].yumrepos['vscode'].name }}"
+    vscode_repo_base_url: "{{ config_context[0].yumrepos['vscode'].url }}"
+    vscode_repo_file: "{{ config_context[0].yumrepos['vscode'].file }}"
+
+    scicom_repo_gpg_key: "{{ config_context[0].yumrepos['scicom'].gpg }}"
+    scicom_repo_name: "{{ config_context[0].yumrepos['scicom'].name }}"
+    scicom_repo_base_url: "{{ config_context[0].yumrepos['scicom'].url }}"
+    scicom_repo_file: "{{ config_context[0].yumrepos['scicom'].file }}"
+
+    nag_repo_name: "{{ config_context[0].yumrepos['nag'].name }}"
+    nag_repo_base_url: "{{ config_context[0].yumrepos['nag'].url }}"
+    nag_repo_file: "{{ config_context[0].yumrepos['nag'].file }}"
+
+    oracle_odbc_repo_name: "{{ config_context[0].yumrepos['oracle'].name }}"
+    oracle_odbc_repo_base_url: "{{ config_context[0].yumrepos['oracle'].url }}"
+    oracle_odbc_repo_file: "{{ config_context[0].yumrepos['oracle'].file }}"
+
+    oneapi_repo_name: "{{ config_context[0].yumrepos['oneapi'].name }}"
+    oneapi_repo_base_url: "{{ config_context[0].yumrepos['oneapi'].url }}"
+    oneapi_repo_file: "{{ config_context[0].yumrepos['oneapi'].file }}"
+
+  
+  tasks:
+    - name: Add Zabbix repo
+      yum_repository:
+        name: ceh-zabbix
+        description: "Zabbix Official Repository - $basearch"
+        baseurl: 'http://el{{ ansible_facts.distribution_major_version|int }}repos.scicom.ceh.ac.uk/{{ ansible_facts.distribution_major_version|int }}/zabbix/'
+        enabled: yes
+
+    - name: Add Zabbix tools repo
+      yum_repository:
+        name: ceh-zabbix-tools
+        description: "Zabbix Tool Official Repository - $basearch"
+        baseurl: 'http://el{{ ansible_facts.distribution_major_version|int }}repos.scicom.ceh.ac.uk/{{ ansible_facts.distribution_major_version|int }}/zabbix-tools/'
+        enabled: yes
+
+    - name: Add Zabbix 3rd repo
+      yum_repository:
+        name: ceh-zabbix-third-party
+        description: "Zabbix Third Party Repository - $basearch"
+        baseurl: 'http://el{{ ansible_facts.distribution_major_version|int }}repos.scicom.ceh.ac.uk/{{ ansible_facts.distribution_major_version|int }}/zabbix-third-party/'
+        enabled: yes
+     
+    - name: install and configure zabbix agent
+      ansible.builtin.include_role:
+         name: community.zabbix.zabbix_agent
+      vars:  
+         zabbix_agent_version: "{{config_context[0].zabbix.version }}"
+         zabbix_agent2: "{{ config_context[0].zabbix['agent'].agent2 }}"
+         zabbix_agent_server: "{{ config_context[0].zabbix['agent'].server }}"
+         zabbix_agent2_server: "{{ config_context[0].zabbix['agent'].server }}"
+         zabbix_agent_serveractive: "{{ config_context[0].zabbix['agent'].server_active }}"
+         zabbix_agent2_serveractive: "{{ config_context[0].zabbix['agent'].server_active }}"
+         zabbix_agent_enableremotecommands: "{{ config_context[0].zabbix['agent'].remotecommands }}"
+         zabbix_agent_hostname: "{{ inventory_hostname }}"
+   #         zabbix_agent_refreshactivechecks: "{{ config_context[0].zabbix['agent'].refresh_active_checks }}"
+   #    zabbix_agent2_refreshactivechecks: "{{ config_context[0].zabbix['agent'].refresh_active_checks }}"
+   #   zabbix_agent_timeout: "{{ config_context[0].zabbix['agent'].timeout }}"
+    ##  zabbix_agent2_timeout: "{{ config_context[0].zabbix['agent'].timeout }}"
+         zabbix_selinux: "{{ config_context[0].zabbix['agent'].selinux }}"
+         zabbix_manage_repo: false
+         zabbix_agent_hostmetadata: "\"{{ 'vm ' if is_virtual}}{{ 'scicom ' if tenants[0] == 'science_computing' }}{{ ansible_facts.system  }} \""
+         zabbix_agent_listenip: "{{ primary_ip4 }}"
+         zabbix_agent_sourceip: "{{ primary_ip4 }}"
+         zabbix_agent_ip: "{{ primary_ip4 }}"
+         zabbix_agent_detect_ip: false
+
+   # - name: debug hostmeta data
+   #   debug:
+   #      msg: "{{ 'vm ' if is_virtual}}{{ 'scicom ' if tenants[0] == 'science_computing' }}{{ ansible_facts.system  }} "
+         
+         #"{{ 'vm ' if is_virtual == true }}"
+     #    {{ 'scicom ' if config_context[0].tenants[0] == 'science_computing' }}{{ ansible_facts.ansible_system  }} "
+          
+    - name: Add conda role when in conda group
+      ansible.builtin.include_role:
+        name: conda
+      when: "'tags_conda' in group_names"
+
+    - name: Add join_ad role when in ad group with ADFilter
+      ansible.builtin.include_role:
+        name: join_ad
+      when:
+        - custom_fields.adjoined
+
+    - name: Add autofs role when in legacy389 group
+      ansible.builtin.include_role:
+        name: autofs
+      when: "'tags_legacy389' in group_names"
+
+    - block:
+        - name: Add GUI
+          ansible.builtin.include_role:
+            name: gui
+          vars:
+            gui_desktop_env: "{{ config_context[0].gui.desktop }}"
+        - name: Add XRDP
+          ansible.builtin.include_role:
+            name: xrdp
+      when: "'tags_xrdp' in group_names or 'tags_gui' in group_names"
+
+    - name: Mount required file systems
+      ansible.posix.mount:
+        path: "{{ item.path }}"
+        src: "{{ item.source }}"
+        fstype: "{{ item.fstype }}"
+        opts: "{{ item.options }}"
+        state: "{{ item.state }}"
+      with_items: "{{ config_context[0].mounts }}"
+
+    - block:
+        - name: Add browser role when in browser group
+          ansible.builtin.include_role:
+            name: browser
+          when: "'tags_browser' in group_names"
+
+        - name: Add r role when in r-lang group
+          ansible.builtin.include_role:
+            name: r_lang
+          when: "'tags_r' in group_names"
+
+        - name: Add rstudio role when in rstudio group
+          ansible.builtin.include_role:
+            name: rstudio
+          when: "'tags_rstudio' in group_names"
+
+        - name: Add gmt role when in gmt group
+          ansible.builtin.include_role:
+            name: gmt
+          when: "'tags_gmt' in group_names"
+
+        - name: add gdal role when in gdap group
+          ansible.builtin.include_role:
+            name: gdal
+          when: "'tags_gdal' in group_names"
+
+        - name: add development_tools role when in development group
+          ansible.builtin.include_role:
+            name: development_tools
+          when: "'tags_development' in group_names"
+
+        - name: add netcdf support when in netcdf group
+          ansible.builtin.include_role:
+            name: netcdf
+          when: "'tags_netcdf' in group_names"
+
+        - name: add vscode role when in vscode group
+          ansible.builtin.include_role:
+            name: vscode
+          when: "'tags_vscode' in group_names"
+
+        - name: add openfoam role when in openfoam group
+          ansible.builtin.include_role:
+            name: openfoam
+          when: "'tags_openfoam' in group_names"
+
+        - name: add qgis role when in qgis group
+          ansible.builtin.include_role:
+            name: qgis
+          when: "'tags_qgis' in group_names"
+
+        - name: add oracle role when in oracle group
+          ansible.builtin.include_role:
+            name: oracle_odbc
+          when: "'tags_oracle' in group_names"
+
+        - name: add sqldeveloper role when in sqldeveloper group
+          ansible.builtin.include_role:
+            name: sqldeveloper
+          when: "'tags_sqldeveloper' in group_names"
+
+        - name: add postgresdb_dev role when in postgresdb_dev group
+          ansible.builtin.include_role:
+            name: postgresdb_dev
+          when: "'tags_postgresdb_dev' in group_names"
+
+        - name: add cifs role when in cifs group
+          ansible.builtin.include_role:
+            name: cifs
+          when: "'tags_cifs' in group_names"
+
+        - name: add admixture role when in admixture group
+          ansible.builtin.include_role:
+            name: admixture
+          when: "'tags_admixture' in group_names"
+
+        - name: add nag role when in nag group
+          ansible.builtin.include_role:
+            name: nag
+          when: "'tags_nag' in group_names"
+
+        - name: add oneapi role when in oneapi group
+          ansible.builtin.include_role:
+            name: oneapi
+          when: "'tags_oneapi' in group_names"
+
+        - name: add jule role when in jules group
+          ansible.builtin.include_role:
+            name: jules
+          when: "'tags_jules' in group_names"
+          
+        - name: add podman role when in podman group
+          ansible.builtin.include_role:
+            name: podman
+          when: "'tags_podman' in group_names"
+
+          
+        - name: add gsl role when in gsl group
+          ansible.builtin.include_role:
+            name: gsl
+          when: "'tags_gsl' in group_names"
+          
+        - name: Add apptainer role
+          ansible.builtin.include_role:
+            name: apptainer
+          when: "'tags_apptainer' in group_names"  
+          
+        - name: Add java
+          ansible.builtin.include_role:
+            name: java
+          vars:
+            java_version: 11 
+          when: "'tags_java11' in group_names"
+
+        - name: Add java
+          ansible.builtin.include_role:
+            name: java
+          vars:
+            java_version: 17 
+          when: "'tags_java17' in group_names"
+
+        - name: Add java
+          ansible.builtin.include_role:
+            name: java
+          vars:
+            java_version: 21 
+          when: "'tags_java21' in group_names"     
+          
+          
+        
+      tags: simplify
+
+  
+
