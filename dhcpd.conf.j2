@@ -2,7 +2,7 @@
 # dhcpd configuration file for cental dhcp on the private cloud
 
 option domain-name "lab.damiendye.uk";
-option domain-name-servers 10.199.98.211, 10.199.98.212;
+option domain-name-servers 10.10.10.211, 10.10.10.212;
 option domain-search "damiendye.uk";
 
 
@@ -115,5 +115,6 @@ host {{ host }} {
 {% endfor %}
 }
 {% endfor %}
+
 
 
