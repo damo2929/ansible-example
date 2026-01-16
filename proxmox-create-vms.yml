@@ -91,6 +91,7 @@
             api_password: "{{ proxmox_password }}"
             api_host: "{{ proxmox_api_ip }}"
             name: "{{ inventory_hostname }}"
+            augs: "-global scsi-hd.physical_block_size=4k -global scsi-hd.logical_block_size=4096 "
             net: '{"net0":"virtio,bridge={{ vlan_netbox_info[0].custom_fields.proxmoxsdn }}"}'
             scsi:
               scsi0: "{{ custom_fields.pool }}:{{ disk / 1000 }},format=qcow2,cache=writeback,discard=on,ssd=1"
@@ -339,3 +340,4 @@
       when:
         - is_virtual
         - os_type == 'l26'
+
