@@ -1,0 +1,10 @@
+# Filter for block devices that are disks (not partitions)
+SUBSYSTEM!="block", GOTO="disk_end"
+ENV{DEVTYPE}!="disk", GOTO="disk_end"
+
+KERNEL=="nvme*" GOTO="nvme_disk"
+KERNEL!="sd*" GOTO="disk_end"
+SYMLINK+="disk/by-custom/$env{ID_BUS}_$env{ID_MODEL}_$env{ID_SERIAL_SHORT}" GOTO="disk_end"
+LABEL="nvme_disk"
+SYMLINK+="disk/by-custom/nvme_$env{ID_MODEL}_$env{ID_SERIAL_SHORT}" GOTO="disk_end"
+LABEL="disk_end"
